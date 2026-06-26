@@ -84,18 +84,21 @@
         const joinBtn = document.getElementById('joinBtn');
         const statusEl = document.getElementById('status');
         const roomInput = document.getElementById('roomInput');
-        const controls = document.getElementById('controls');
 
         let localStream, pc, room, facingMode = 'user', muted = false, videoOff = false;
-        const socket = io();
+        const socket = io({
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionAttempts: 100
+        });
         const config = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
                 { urls: 'stun:stun2.l.google.com:19302' },
-                { urls: 'stun:stun3.l.google.com:19302' },
-                { urls: 'stun:stun4.l.google.com:19302' }
-            ]
+                { urls: 'stun:stun3.l.google.com:19302' }
+            ],
+            iceCandidatePoolSize: 10
         };
 
         function setStatus(t) { statusEl.textContent = t; }
@@ -167,36 +170,113 @@
             }
         };
 
-        function makePC() {
+        function makePC(isInitiator) {
+            if (pc) { pc.close(); pc = null; }
             pc = new RTCPeerConnection(config);
             localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-            pc.ontrack = e => { remoteVideo.srcObject = e.streams[0]; setStatus('通话中'); };
-            pc.onicecandidate = e => { if (e.candidate) socket.emit('candidate', { candidate: e.candidate, room }); };
-            pc.oniceconnectionstatechange = () => {
-                if (pc.iceConnectionState === 'disconnected') setStatus('对方已断开');
+            
+            pc.ontrack = e => {
+                console.log('[收到远端流]');
+                remoteVideo.srcObject = e.streams[0];
+                setStatus('通话中');
             };
+            
+            pc.onicecandidate = e => {
+                if (e.candidate) {
+                    console.log('[发送ICE]');
+                    socket.emit('candidate', { candidate: e.candidate, room });
+                }
+            };
+            
+            pc.oniceconnectionstatechange = () => {
+                console.log('[ICE状态]', pc.iceConnectionState);
+                if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+                    setStatus('通话中');
+                } else if (pc.iceConnectionState === 'disconnected') {
+                    setStatus('连接中断，尝试重连...');
+                } else if (pc.iceConnectionState === 'failed') {
+                    setStatus('连接失败');
+                }
+            };
+
+            pc.onconnectionstatechange = () => {
+                console.log('[连接状态]', pc.connectionState);
+            };
+
+            return pc;
         }
 
         socket.on('start-call', async () => {
-            setStatus('连接中...');
-            makePC();
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            socket.emit('offer', { sdp: pc.localDescription, room });
+            console.log('[收到start-call]');
+            setStatus('建立连接...');
+            makePC(true);
+            try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                socket.emit('offer', { sdp: pc.localDescription, room });
+            } catch (e) {
+                console.error('[Offer错误]', e);
+            }
         });
 
         socket.on('offer', async data => {
-            makePC();
-            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            socket.emit('answer', { sdp: pc.localDescription, room });
+            console.log('[收到offer]');
+            makePC(false);
+            try {
+                await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                socket.emit('answer', { sdp: pc.localDescription, room });
+            } catch (e) {
+                console.error('[Answer错误]', e);
+            }
         });
 
-        socket.on('answer', async data => { if (pc) await pc.setRemoteDescription(new RTCSessionDescription(data.sdp)); });
-        socket.on('candidate', async data => { if (pc) await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); });
-        socket.on('peer-disconnected', () => { setStatus('对方已离开'); remoteVideo.srcObject = null; if (pc) { pc.close(); pc = null; } });
-        socket.on('joined', n => { if (n < 2) setStatus('等待对方加入...'); else setStatus('对方已就绪'); });
+        socket.on('answer', async data => {
+            console.log('[收到answer]');
+            if (pc) {
+                try {
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                } catch (e) {
+                    console.error('[Answer处理错误]', e);
+                }
+            }
+        });
+
+        socket.on('candidate', async data => {
+            console.log('[收到ICE]');
+            if (pc) {
+                try {
+                    await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                } catch (e) {
+                    console.error('[ICE错误]', e);
+                }
+            }
+        });
+
+        socket.on('peer-disconnected', () => {
+            console.log('[对方断开]');
+            setStatus('对方已离开');
+            remoteVideo.srcObject = null;
+            if (pc) { pc.close(); pc = null; }
+        });
+
+        socket.on('joined', n => {
+            console.log('[加入房间]', n);
+            if (n < 2) setStatus('等待对方加入...');
+            else setStatus('对方已就绪');
+        });
+
+        socket.on('connect', () => console.log('[Socket连接]', socket.id));
+        socket.on('disconnect', () => {
+            console.log('[Socket断开]');
+            setStatus('连接断开，重连中...');
+        });
+        socket.on('reconnect', () => {
+            console.log('[Socket重连]', socket.id);
+            setStatus('已重连');
+            if (room) socket.emit('join', room);
+        });
     </script>
 </body>
 </html>

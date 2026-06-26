@@ -1,14 +1,14 @@
 const express = require('express');
-const https = require('https');
-const fs = require('fs');
+const http = require('http');
 const { Server } = require('socket.io');
 
 const app = express();
-const server = https.createServer({
-    key: fs.readFileSync('certs/key.pem'),
-    cert: fs.readFileSync('certs/cert.pem')
-}, app);
-const io = new Server(server, { cors: { origin: '*' } });
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: { origin: '*' },
+    pingTimeout: 60000,
+    pingInterval: 25000
+});
 
 app.use(express.static('public'));
 
@@ -36,7 +36,6 @@ io.on('connection', socket => {
         const readyUsers = users.filter(id => rooms[room][id].ready);
         
         if (readyUsers.length >= 2) {
-            // 找出先加入的用户作为发起方
             const first = users.reduce((a, b) => 
                 rooms[room][a].joined < rooms[room][b].joined ? a : b
             );
@@ -66,7 +65,8 @@ io.on('connection', socket => {
     });
 });
 
-server.listen(3000, '0.0.0.0', () => {
+const PORT = 3000;
+server.listen(PORT, '0.0.0.0', () => {
     console.log('=== 服务器启动 ===');
-    console.log('手机访问: https://10.0.12.35:3000');
+    console.log(`访问: http://localhost:${PORT}`);
 });
