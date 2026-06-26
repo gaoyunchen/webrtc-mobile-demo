@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>视频聊天</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { height: 100%; overflow: hidden; }
+        body { font-family: -apple-system, sans-serif; background: #000; color: #fff; }
+        
+        .header { position: fixed; top: 0; left: 0; right: 0; z-index: 999; background: #222; padding: 10px 15px; display: flex; gap: 8px; }
+        .header input { flex: 1; padding: 10px; border: 1px solid #555; border-radius: 6px; background: #333; color: #fff; font-size: 14px; }
+        .header button { padding: 10px 16px; border: none; border-radius: 6px; background: #0af; color: #fff; font-weight: bold; }
+        .header button:disabled { background: #555; }
+        
+        #status { position: fixed; top: 52px; left: 0; right: 0; z-index: 999; text-align: center; padding: 6px; font-size: 12px; color: #0f0; background: #000; }
+        
+        #remote { position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
+        #local { position: fixed; bottom: 100px; right: 10px; width: 28%; min-width: 90px; border-radius: 8px; border: 2px solid #0af; z-index: 10; }
+        
+        .controls { 
+            position: fixed; 
+            bottom: 0; 
+            left: 0; 
+            right: 0; 
+            z-index: 9999; 
+            background: #1a1a1a; 
+            border-top: 2px solid #444;
+            display: flex; 
+            justify-content: center; 
+            align-items: center;
+            gap: 12px; 
+            padding: 12px 10px; 
+            padding-bottom: max(12px, env(safe-area-inset-bottom)); 
+        }
+        
+        .ctrl-btn { 
+            width: 48px; 
+            height: 48px; 
+            border-radius: 50%; 
+            border: none; 
+            font-size: 13px; 
+            cursor: pointer; 
+            color: #fff;
+            font-weight: bold;
+        }
+        .ctrl-btn:active { opacity: 0.7; }
+        .ctrl-btn.btn-cam { background: #0af; }
+        .ctrl-btn.btn-hang { background: #e00; }
+        .ctrl-btn.btn-mic { background: #73f; }
+        .ctrl-btn.btn-flip { background: #f90; }
+        .ctrl-btn.btn-video { background: #888; }
+        .ctrl-btn.off { opacity: 0.3; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <input id="roomInput" placeholder="房间号">
+        <button id="joinBtn">加入</button>
+    </div>
+    <div id="status">输入房间号，点击加入</div>
+    
+    <video id="remote" autoplay playsinline></video>
+    <video id="local" autoplay playsinline muted style="display:none"></video>
+    
+    <div class="controls" id="controls">
+        <button class="ctrl-btn btn-cam" id="startBtn">开启<br>摄像头</button>
+        <button class="ctrl-btn btn-hang" id="hangBtn" style="display:none">挂断</button>
+        <button class="ctrl-btn btn-mic" id="muteBtn" style="display:none">静音</button>
+        <button class="ctrl-btn btn-flip" id="flipBtn" style="display:none">翻转</button>
+        <button class="ctrl-btn btn-video" id="stopBtn" style="display:none">关画面</button>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const localVideo = document.getElementById('local');
+        const remoteVideo = document.getElementById('remote');
+        const startBtn = document.getElementById('startBtn');
+        const hangBtn = document.getElementById('hangBtn');
+        const muteBtn = document.getElementById('muteBtn');
+        const flipBtn = document.getElementById('flipBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const joinBtn = document.getElementById('joinBtn');
+        const statusEl = document.getElementById('status');
+        const roomInput = document.getElementById('roomInput');
+        const controls = document.getElementById('controls');
+
+        let localStream, pc, room, facingMode = 'user', muted = false, videoOff = false;
+        const socket = io();
+        const config = { iceServers: [] };
+
+        function setStatus(t) { statusEl.textContent = t; }
+        
+        function showCallBtns() {
+            startBtn.style.display = 'none';
+            hangBtn.style.display = '';
+            muteBtn.style.display = '';
+            flipBtn.style.display = '';
+            stopBtn.style.display = '';
+            localVideo.style.display = '';
+        }
+
+        joinBtn.onclick = () => {
+            room = roomInput.value.trim();
+            if (!room) return setStatus('请输入房间号');
+            socket.emit('join', room);
+            joinBtn.disabled = true;
+            roomInput.disabled = true;
+            setStatus('等待对方加入...');
+        };
+
+        startBtn.onclick = async () => {
+            try {
+                setStatus('开启摄像头...');
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+                    audio: true
+                });
+                localVideo.srcObject = localStream;
+                showCallBtns();
+                setStatus('摄像头已开启，等待对方...');
+                socket.emit('camera-ready', room);
+            } catch (e) {
+                setStatus('错误: ' + e.message);
+            }
+        };
+
+        hangBtn.onclick = () => {
+            if (pc) { pc.close(); pc = null; }
+            if (localStream) { localStream.getTracks().forEach(t => t.stop()); }
+            socket.emit('leave', room);
+            location.reload();
+        };
+
+        stopBtn.onclick = () => {
+            if (!localStream) return;
+            videoOff = !videoOff;
+            localStream.getVideoTracks().forEach(t => { t.enabled = !videoOff; });
+            localVideo.style.display = videoOff ? 'none' : '';
+            stopBtn.textContent = videoOff ? '开画面' : '关画面';
+        };
+
+        muteBtn.onclick = () => {
+            muted = !muted;
+            localStream.getAudioTracks()[0].enabled = !muted;
+            muteBtn.textContent = muted ? '开麦' : '静音';
+            muteBtn.classList.toggle('off', muted);
+        };
+
+        flipBtn.onclick = async () => {
+            facingMode = facingMode === 'user' ? 'environment' : 'user';
+            localStream.getTracks().forEach(t => t.stop());
+            localStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode }, audio: true });
+            localVideo.srcObject = videoOff ? null : localStream;
+            if (pc) {
+                const s = pc.getSenders().find(s => s.track?.kind === 'video');
+                if (s) s.replaceTrack(localStream.getVideoTracks()[0]);
+            }
+        };
+
+        function makePC() {
+            pc = new RTCPeerConnection(config);
+            localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+            pc.ontrack = e => { remoteVideo.srcObject = e.streams[0]; setStatus('通话中'); };
+            pc.onicecandidate = e => { if (e.candidate) socket.emit('candidate', { candidate: e.candidate, room }); };
+            pc.oniceconnectionstatechange = () => {
+                if (pc.iceConnectionState === 'disconnected') setStatus('对方已断开');
+            };
+        }
+
+        socket.on('start-call', async () => {
+            setStatus('连接中...');
+            makePC();
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            socket.emit('offer', { sdp: pc.localDescription, room });
+        });
+
+        socket.on('offer', async data => {
+            makePC();
+            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            socket.emit('answer', { sdp: pc.localDescription, room });
+        });
+
+        socket.on('answer', async data => { if (pc) await pc.setRemoteDescription(new RTCSessionDescription(data.sdp)); });
+        socket.on('candidate', async data => { if (pc) await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); });
+        socket.on('peer-disconnected', () => { setStatus('对方已离开'); remoteVideo.srcObject = null; if (pc) { pc.close(); pc = null; } });
+        socket.on('joined', n => { if (n < 2) setStatus('等待对方加入...'); else setStatus('对方已就绪'); });
+    </script>
+</body>
+</html>
